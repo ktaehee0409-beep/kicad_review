@@ -1,0 +1,80 @@
+name: KiCad GPT Design Review
+
+on:
+  push:
+    paths:
+      - '**/*.kicad_sch'
+      - '**/*.kicad_pcb'
+  pull_request:
+    paths:
+      - '**/*.kicad_sch'
+      - '**/*.kicad_pcb'
+
+permissions:
+  contents: read
+  pull-requests: write
+  statuses: write
+
+jobs:
+  review:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v6
+
+      - name: Run KiCad Analysis
+        uses: aklofas/kicad-happy@v1
+        id: analysis
+        with:
+          diff-base: true
+
+      - name: AI-Powered Review with ChatGPT
+        uses: actions/github-script@v7
+        if: github.event_name == 'pull_request' && env.OPENAI_API_KEY != ''
+        env:
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+        with:
+          script: |
+            const fs = require('fs');
+            let reportContent = '';
+            try {
+              reportContent = fs.readFileSync('${{ steps.analysis.outputs.report-path }}', 'utf8');
+            } catch (e) {
+              reportContent = "자동 분석 리포트 파일을 읽지 못했습니다. 기본 파일 구조를 검토해주세요.";
+            }
+
+            const response = await fetch('https://api.openai.com/v1/chat/completions', {
+              method: 'POST',
+              headers: {
+                'Authorization': `Bearer ${process.env.OPENAI_API_KEY}`,
+                'Content-Type': 'application/json'
+              },
+              body: JSON.stringify({
+                model: 'gpt-4o',
+                messages: [
+                  {
+                    role: 'system',
+                    content: '너는 15년 차 이상의 전문 하드웨어 및 PCB 아트웍 수석 엔지니어이다. 제공되는 KiCad 자동 분석 리포트를 바탕으로 부품 배치, 배선(Routing), 전원 무결성 측면의 문제점을 검토하고 핵심 개선안을 간결하게 정리해라.'
+                  },
+                  {
+                    role: 'user',
+                    content: `다음은 KiCad 디자인 자동 분석 결과이다:\n\n${reportContent}`
+                  }
+                ],
+                temperature: 0.2
+              })
+            });
+
+            const data = await response.json();
+            if (!data.choices || data.choices.length === 0) {
+              console.error('OpenAI API 응답 오류:', data);
+              return;
+            }
+            const reviewComment = data.choices[0].message.content;
+
+            await github.rest.issues.createComment({
+              issue_number: context.issue.number,
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              body: `## 🤖 ChatGPT PCB 아트웍 검수 결과\n\n${reviewComment}`
+            });
